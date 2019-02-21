@@ -1,4 +1,4 @@
-package main
+package userinput
 
 import (
 	"context"
@@ -22,10 +22,10 @@ type NotifyInput struct {
 	SoundName string
 }
 
-var _ Input = &NotifyInput{}
+var _ Interface = &NotifyInput{}
 
 // GetInput implements Input.
-func (input *NotifyInput) GetInput(ctx context.Context, output string, options ...InputOption) (string, error) {
+func (input *NotifyInput) GetInput(ctx context.Context, output string, choices ...Choice) (string, error) {
 	ntf := notify.NewNotification(input.Summary, strings.Trim(output, "\r\n"))
 	ntf.AppIcon = input.AppIcon
 	ntf.Hints = make(map[string]interface{})
@@ -55,7 +55,7 @@ func (input *NotifyInput) GetInput(ctx context.Context, output string, options .
 
 	numDefaults := 0
 	actionPairs := []string{}
-	for _, opt := range options {
+	for _, opt := range choices {
 		if opt.Default {
 			numDefaults++
 			if numDefaults == 1 {

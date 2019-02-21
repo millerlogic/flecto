@@ -1,4 +1,4 @@
-package main
+package userinput
 
 import (
 	"bufio"
@@ -11,46 +11,31 @@ import (
 	"unicode"
 )
 
-// InputOption is a user input option for use with Input.GetInput
-type InputOption struct {
-	Text     string // the text the user can input.
-	Shortcut rune   // leave zero for no shortcut.
-	Default  bool   // set to true if it's the default option.
-}
-
-// Input gets user input.
-// GetInput's output string is what is presented to the user. The returned string is the user input.
-// The output string can contain basic HTML tags and entities, which may be used or stripped.
-// Waits until either the user inputs or the ctx is done.
-type Input interface {
-	GetInput(ctx context.Context, output string, options ...InputOption) (string, error)
-}
-
 // TermInput reads input from the terminal.
 type TermInput struct {
 	m  sync.Mutex
 	ch chan string
 }
 
-var _ Input = &TermInput{}
+var _ Interface = &TermInput{}
 
 var htmlRegexp = regexp.MustCompile(`<[^>]*>|&[^;]*;`)
 
 // GetInput implements Input; Run must be called first. Instance thread safe when properly using Run.
 // What the user inputs is not validated, it simply returns the first thing the user enters.
-func (input *TermInput) GetInput(ctx context.Context, output string, options ...InputOption) (string, error) {
+func (input *TermInput) GetInput(ctx context.Context, output string, choices ...Choice) (string, error) {
 	input.m.Lock()
 	defer input.m.Unlock()
 	buf := &strings.Builder{}
 	buf.WriteString("\n----------\n")
 	outputText := htmlRegexp.ReplaceAllString(output, "")
 	buf.WriteString(strings.Trim(outputText, "\r\n"))
-	if len(options) != 0 {
+	if len(choices) != 0 {
 		numDefaults := 0
 		allShortcuts := true
 		anyUppercaseShortcuts := false
 		buf.WriteString("\n\n * Please input one of: ")
-		for _, opt := range options {
+		for _, opt := range choices {
 			if opt.Default {
 				numDefaults++
 			}
@@ -69,7 +54,7 @@ func (input *TermInput) GetInput(ctx context.Context, output string, options ...
 		}
 		if allShortcuts {
 			buf.WriteString("\t[")
-			for _, opt := range options {
+			for _, opt := range choices {
 				if opt.Default && numDefaults == 1 && !anyUppercaseShortcuts {
 					buf.WriteRune(unicode.ToUpper(opt.Shortcut))
 				} else {

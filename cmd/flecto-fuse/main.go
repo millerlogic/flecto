@@ -17,6 +17,7 @@ import (
 	fuseFs "bazil.org/fuse/fs"
 	"github.com/millerlogic/flecto/subprocfs"
 	"github.com/millerlogic/flecto/userfs"
+	"github.com/millerlogic/flecto/userinput"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 )
@@ -27,7 +28,7 @@ type mountOpts struct {
 	verbose bool
 }
 
-func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input Input) error {
+func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input userinput.Interface) error {
 	fs := userfs.New(srcDir)
 	if opts.debug {
 		fs.SetLogger(log.New(os.Stderr, "", log.LstdFlags))
@@ -82,10 +83,10 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input Input
 				}
 				msg := fmt.Sprintf("File <b>%s</b> request for:\n &bull; <tt>%s</tt> \n\nAllow access?",
 					html.EscapeString(req.Action), html.EscapeString(req.Path))
-				inopts := []InputOption{
-					InputOption{Text: "Skip", Shortcut: 's', Default: true},
-					InputOption{Text: "Yes", Shortcut: 'y'},
-					InputOption{Text: "No", Shortcut: 'n'},
+				choices := []userinput.Choice{
+					userinput.Choice{Text: "Skip", Shortcut: 's', Default: true},
+					userinput.Choice{Text: "Yes", Shortcut: 'y'},
+					userinput.Choice{Text: "No", Shortcut: 'n'},
 				}
 				_ = recent
 				/* // This isn't working as expected.
@@ -97,7 +98,7 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input Input
 				*/
 				ctxInput, cancel := context.WithTimeout(ctx, userfs.UserAllowedDefaultTimeout)
 				defer cancel()
-				in, err := input.GetInput(ctxInput, msg, inopts...)
+				in, err := input.GetInput(ctxInput, msg, choices...)
 				if err != nil {
 					if err == context.DeadlineExceeded {
 						select {
@@ -275,21 +276,21 @@ func run() error {
 		signal.Stop(sigch)
 	}()
 
-	var input Input
+	var input userinput.Interface
 	switch inputMode {
 	case "term":
-		xinput := &TermInput{}
+		xinput := &userinput.TermInput{}
 		input = xinput
 		go xinput.Run(ctx)
 	case "notify":
-		xinput := &NotifyInput{Summary: notifySummary, AppIcon: notifyAppIcon, SoundName: notifySoundName}
+		xinput := &userinput.NotifyInput{Summary: notifySummary, AppIcon: notifyAppIcon, SoundName: notifySoundName}
 		err := xinput.Supported()
 		if err != nil {
 			return errors.Wrap(err, "Notifications not supported")
 		}
 		input = xinput
 	case "auto":
-		xinput1 := &NotifyInput{Summary: notifySummary, AppIcon: notifyAppIcon, SoundName: notifySoundName}
+		xinput1 := &userinput.NotifyInput{Summary: notifySummary, AppIcon: notifyAppIcon, SoundName: notifySoundName}
 		err1 := xinput1.Supported()
 		if err1 == nil {
 			log.Print("-input=auto using notify")
@@ -299,7 +300,7 @@ func run() error {
 				log.Printf("-input=auto not using notify (because: %v)", err1)
 			}
 			log.Print("-input=auto using term")
-			xinput2 := &TermInput{}
+			xinput2 := &userinput.TermInput{}
 			input = xinput2
 			go xinput2.Run(ctx)
 		}
