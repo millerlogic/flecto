@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -81,21 +83,24 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 					log.Printf("File %s request for \"%s\" (uid=%d, tid=%d)",
 						req.Action, req.Path, req.UID, req.ThreadPID)
 				}
-				msg := fmt.Sprintf("File <b>%s</b> request for:\n &bull; <tt>%s</tt> \n\nAllow access?",
-					html.EscapeString(req.Action), html.EscapeString(req.Path))
-				choices := []userinput.Choice{
-					userinput.Choice{Text: "Skip", Shortcut: 's', Default: true},
-					userinput.Choice{Text: "Yes", Shortcut: 'y'},
-					userinput.Choice{Text: "No", Shortcut: 'n'},
+				fname := filepath.Base(req.Path)
+				fdir := filepath.Dir(req.Path)
+				fext := filepath.Ext(fname)
+				fdisp := strings.TrimRight(fname, fext)
+				msg := "<b>" + html.EscapeString(strings.Title(req.Action)) + "</b> file:\n&bull; <b>" +
+					fdisp + "</b><small>" + html.EscapeString(fext) +
+					" &nbsp; <i>" + html.EscapeString(fdir) + "</i></small>"
+				var choices []userinput.Choice
+				if recent < 5 {
+					choices = append(choices, userinput.Choice{Text: "Allow", Shortcut: 'y'})
+					choices = append(choices, userinput.Choice{Text: "Deny", Shortcut: 'n'})
+					choices = append(choices, userinput.Choice{Text: "Skip", Shortcut: 's', Default: true})
+				} else {
+					msg += "\n<small>Allow or deny <b>all</b> for 30 seconds?</small>"
+					choices = append(choices, userinput.Choice{Text: "Allow All", Shortcut: 'a'})
+					choices = append(choices, userinput.Choice{Text: "Deny All", Shortcut: 'd'})
+					choices = append(choices, userinput.Choice{Text: "Skip", Shortcut: 's', Default: true})
 				}
-				_ = recent
-				/* // This isn't working as expected.
-				if recent >= 5 {
-					msg += "\n\n   or deny or allow all requests for 30 seconds"
-					opts = append(opts, InputOption{Text: "Deny All", Shortcut: 'd'})
-					opts = append(opts, InputOption{Text: "Allow All", Shortcut: 'a'})
-				}
-				*/
 				ctxInput, cancel := context.WithTimeout(ctx, userfs.UserAllowedDefaultTimeout)
 				defer cancel()
 				in, err := input.GetInput(ctxInput, msg, choices...)
