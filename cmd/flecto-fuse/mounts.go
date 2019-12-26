@@ -113,27 +113,23 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 					}
 					fs.SetUserAllowed(req.Path, userfs.UserAllowNoneOnce)
 				} else {
-					var ch byte
-					if in != "" {
-						ch = in[0]
-					}
-					switch ch {
-					case 'y', 'Y': // yes (one)
+					switch strings.ToLower(in) {
+					case "allow", "y": // (one)
 						if opts.verbose {
 							log.Print("Allowing...")
 						}
 						fs.SetUserAllowed(req.Path, userfs.UserAllowAll)
-					case 'n', 'N':
+					case "deny", "n":
 						if opts.verbose {
 							log.Print("Denying...")
 						}
 						fs.SetUserAllowed(req.Path, userfs.UserAllowNone)
-					case 'd', 'D': // deny 30s
+					case "deny all", "d": // deny 30s
 						if opts.verbose {
 							log.Print("Denying all for 30 seconds...")
 						}
 						fs.AutoUserAllowRequests(userfs.UserAllowNone, time.Now().Add(30*time.Second))
-					case 'a', 'A': // allow 30s
+					case "allow all", "a": // allow 30s
 						if opts.verbose {
 							log.Print("Allowing all for 30 seconds...")
 						}

@@ -97,7 +97,7 @@ func (input *NotifyInput) GetInput(ctx context.Context, output string, choices .
 		//defer log.Printf("done reading signals")
 		for sig := range ch {
 			if sig.ID == nid {
-				//spew.Dump(sig)
+				//fmt.Printf("notify: %#v\n", sig)
 				if sig.CloseReason == notify.NotClosed {
 					notify.CloseNotification(nid)
 					if strings.HasPrefix(sig.ActionKey, actionPrefix) {
