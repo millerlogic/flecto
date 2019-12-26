@@ -82,9 +82,9 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 				fdir := filepath.Dir(req.Path)
 				fext := filepath.Ext(fname)
 				fdisp := strings.TrimRight(fname, fext)
-				msg := "<b>" + html.EscapeString(strings.Title(req.Action)) + "</b> file:\n&bull; <b>" +
+				msg := "<b>" + html.EscapeString(strings.Title(req.Action)) + "</b> file:\n• <b>" +
 					fdisp + "</b><small>" + html.EscapeString(fext) +
-					" &nbsp; <i>" + html.EscapeString(fdir) + "</i></small>"
+					"   <i>" + html.EscapeString(fdir) + "</i></small>"
 				var choices []userinput.Choice
 				if recent < 5 {
 					choices = append(choices, userinput.Choice{Text: "Allow", Shortcut: 'y'})
