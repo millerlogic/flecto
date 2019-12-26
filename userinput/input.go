@@ -2,6 +2,8 @@ package userinput
 
 import (
 	"context"
+	"html"
+	"regexp"
 )
 
 // Choice is a user input choice for use with Input.GetInput
@@ -17,4 +19,12 @@ type Choice struct {
 // Waits until either the user inputs or the ctx is done.
 type Interface interface {
 	GetInput(ctx context.Context, output string, choice ...Choice) (string, error)
+}
+
+var htmlRegexp = regexp.MustCompile(`<[^>]*>|&[^;]*;`)
+
+// RemoveHTML in case a user input interface does not support HTML.
+// This is used internally by an interface implementation.
+func RemoveHTML(s string) string {
+	return html.UnescapeString(htmlRegexp.ReplaceAllString(s, ""))
 }

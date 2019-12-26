@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"unicode"
@@ -19,8 +18,6 @@ type TermInput struct {
 
 var _ Interface = &TermInput{}
 
-var htmlRegexp = regexp.MustCompile(`<[^>]*>|&[^;]*;`)
-
 // GetInput implements Input; Run must be called first. Instance thread safe when properly using Run.
 // What the user inputs is not validated, it simply returns the first thing the user enters.
 func (input *TermInput) GetInput(ctx context.Context, output string, choices ...Choice) (string, error) {
@@ -28,7 +25,7 @@ func (input *TermInput) GetInput(ctx context.Context, output string, choices ...
 	defer input.m.Unlock()
 	buf := &strings.Builder{}
 	buf.WriteString("\n----------\n")
-	outputText := htmlRegexp.ReplaceAllString(output, "")
+	outputText := RemoveHTML(output)
 	buf.WriteString(strings.Trim(outputText, "\r\n"))
 	if len(choices) != 0 {
 		numDefaults := 0

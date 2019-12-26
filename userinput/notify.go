@@ -20,13 +20,24 @@ type NotifyInput struct {
 	AppIcon   string
 	Category  string
 	SoundName string
+	caps      notify.Capabilities
+	gotCaps   bool
 }
 
 var _ Interface = &NotifyInput{}
 
 // GetInput implements Input.
 func (input *NotifyInput) GetInput(ctx context.Context, output string, choices ...Choice) (string, error) {
-	ntf := notify.NewNotification(input.Summary, strings.Trim(output, "\r\n"))
+	if !input.gotCaps {
+		input.Supported()
+	}
+
+	outputClean := strings.Trim(output, "\r\n")
+	if !input.caps.BodyMarkup {
+		outputClean = RemoveHTML(outputClean)
+	}
+
+	ntf := notify.NewNotification(input.Summary, outputClean)
 	ntf.AppIcon = input.AppIcon
 	ntf.Hints = make(map[string]interface{})
 	if input.Category != "" {
@@ -126,6 +137,8 @@ func (input *NotifyInput) GetInput(ctx context.Context, output string, choices .
 // Supported returns nil on success if supported.
 func (input *NotifyInput) Supported() error {
 	caps, err := notify.GetCapabilities()
+	input.caps = caps
+	input.gotCaps = true
 	if err != nil {
 		return err
 	}
