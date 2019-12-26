@@ -30,6 +30,15 @@ var ErrUserNotAllowed = userNotAllowedError(syscall.EACCES)
 // UserAllow is how access is allowed or denied.
 type UserAllow byte
 
+func (allow UserAllow) Allowed() bool {
+	switch allow {
+	case UserAllowOnce:
+	case UserAllowAll:
+		return true
+	}
+	return false
+}
+
 const (
 	UserAllowNone     UserAllow = iota
 	UserAllowNoneOnce           // transient, only used by SetUserAllowed. good for user timeout.
@@ -174,14 +183,20 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	aw, ok := f.await[path]
 	if !ok {
 		aw = make(chan struct{})
-		f.await[path] = aw
 		// Ask the user, only if it's a new await, and only if accepting allow requests.
 		if f.allowReqs != nil {
+			f.await[path] = aw
 			select {
 			case f.allowReqs <- req:
 			default:
+				// Channel is full, so forget about it and don't wait.
+				delete(f.await, path)
+				close(aw)
 				log.Print("Channel is full (AcceptUserAllowRequests)")
 			}
+		} else {
+			// Nothing allowing, so don't wait.
+			close(aw)
 		}
 	}
 	f.alock.Unlock()
@@ -190,12 +205,11 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	select {
 	case <-aw:
 	case <-ctx.Done():
-		return UserAllowNone
 	}
 
 	// Get reply.
 	f.alock.RLock()
-	allow, ok = f.allowed[path]
+	allow, ok = f.allowed[path] // defaults to UserAllowNone
 	f.alock.RUnlock()
 	return allow
 }
@@ -239,14 +253,14 @@ func newUserReqFromAttr(newPath, action string, attr *fuse.Attr) UserRequest {
 func (f *FS) IsUserAllowed(ctx context.Context, req UserRequest) bool {
 	ctx, cancel := context.WithTimeout(ctx, UserAllowedDefaultTimeout)
 	defer cancel()
-	return f.isUserAllowedWait(ctx, req) != UserAllowNone
+	return f.isUserAllowedWait(ctx, req).Allowed()
 }
 
 // IsUserAllowedFast - quickly checks if the user allowed, without waiting.
 func (f *FS) IsUserAllowedFast(ctx context.Context, req UserRequest) bool {
 	ctx, cancel := context.WithCancel(ctx)
 	cancel() // cancel it now, we want it done immediately.
-	return f.isUserAllowedWait(ctx, req) != UserAllowNone
+	return f.isUserAllowedWait(ctx, req).Allowed()
 }
 
 // Root node (dir)
