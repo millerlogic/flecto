@@ -28,7 +28,7 @@ type mountOpts struct {
 func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input userinput.Interface) error {
 	fs := userfs.New(srcDir, opts.destDir)
 	if opts.debug {
-		fs.SetLogger(log.New(os.Stderr, "", log.LstdFlags))
+		fs.SetLogger(log.New(os.Stderr, "DEBUG userfs ", log.LstdFlags))
 	}
 	c, err := fuse.Mount(opts.destDir, fuse.DefaultPermissions(), fuse.AsyncRead())
 	if err != nil {
@@ -187,7 +187,7 @@ func mountSubProcFS(ctx context.Context, opts mountOpts) error {
 		subprocfs.NewProcInfo("/proc/swaps", "Filename\tType\tSize\tUsed\tPriority\n"),
 	)
 	if opts.debug {
-		fs.SetLogger(log.New(os.Stderr, "subprocfs ", log.LstdFlags))
+		fs.SetLogger(log.New(os.Stderr, "DEBUG subprocfs ", log.LstdFlags))
 	}
 	fs.LimitPIDs(true)
 	c, err := fuse.Mount(opts.destDir, fuse.DefaultPermissions(), fuse.AsyncRead())
