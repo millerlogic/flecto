@@ -3,6 +3,7 @@ package userfs
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -48,7 +49,8 @@ type UserRequest struct {
 
 // FS for user files, such as their home, documents, other personal files.
 type FS struct {
-	fs *loopback.FS
+	fs      *loopback.FS
+	newPath string
 
 	alock          sync.RWMutex
 	allowed        map[string]UserAllow // paths allowed.
@@ -62,9 +64,10 @@ var _ fs.FS = &FS{}
 var _ fs.FSStatfser = &FS{}
 
 // New user FS.
-func New(srcPath string) *FS {
+func New(srcPath, newPath string) *FS {
 	return &FS{
 		fs:      loopback.New(srcPath),
+		newPath: newPath,
 		allowed: make(map[string]UserAllow),
 		await:   make(map[string]chan struct{}),
 	}
@@ -212,9 +215,9 @@ func (f *FS) isUserAllowedWait(ctx context.Context, req UserRequest) UserAllow {
 // UserAllowedDefaultTimeout is the default timeout for waiting for a response from the user.
 const UserAllowedDefaultTimeout = 10 * time.Second
 
-func newUserReq(path, action string, header *fuse.Header) UserRequest {
+func newUserReq(newPath, action string, header *fuse.Header) UserRequest {
 	return UserRequest{
-		Path:      path,
+		Path:      newPath,
 		Action:    action,
 		UID:       header.Uid,
 		GID:       header.Gid,
@@ -222,9 +225,9 @@ func newUserReq(path, action string, header *fuse.Header) UserRequest {
 	}
 }
 
-func newUserReqFromAttr(path, action string, attr *fuse.Attr) UserRequest {
+func newUserReqFromAttr(newPath, action string, attr *fuse.Attr) UserRequest {
 	return UserRequest{
-		Path:      path,
+		Path:      newPath,
 		Action:    action,
 		UID:       attr.Uid,
 		GID:       attr.Gid,
@@ -252,7 +255,7 @@ func (f *FS) Root() (fs.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &userNode{f, node.(*loopback.Node)}, nil
+	return &userNode{f, node.(*loopback.Node), f.newPath}, nil
 }
 
 // Statfs is the FS statistics info.
@@ -261,8 +264,9 @@ func (f *FS) Statfs(ctx context.Context, req *fuse.StatfsRequest, resp *fuse.Sta
 }
 
 type userNode struct {
-	f    *FS
-	node *loopback.Node
+	f       *FS
+	node    *loopback.Node
+	newPath string
 }
 
 func growSize(x uint64) uint64 {
@@ -278,7 +282,7 @@ func (n *userNode) Attr(ctx context.Context, attr *fuse.Attr) error {
 	if err != nil {
 		return err
 	}
-	if !n.f.IsUserAllowedFast(ctx, newUserReqFromAttr(n.node.GetRealPath(), "attr", attr)) {
+	if !n.f.IsUserAllowedFast(ctx, newUserReqFromAttr(n.newPath, "attr", attr)) {
 		// Obscure some things if not allowed yet...
 		attr.Blocks = 42                // Fake block count.
 		attr.Size = growSize(attr.Size) // Fake size.
@@ -305,11 +309,11 @@ func (n *userNode) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &userNode{n.f, node.(*loopback.Node)}, nil
+	return &userNode{n.f, node.(*loopback.Node), filepath.Join(n.newPath, name)}, nil
 }
 
 func (n *userNode) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
-	/*if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "access", &req.Header)) {
+	/*if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "access", &req.Header)) {
 		return nil, ErrUserNotAllowed
 	}*/
 	handle, err := n.node.Open(ctx, req, resp)
@@ -319,7 +323,7 @@ func (n *userNode) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.O
 	return &uhandle{
 		f:         n.f,
 		handle:    handle.(*loopback.Handle),
-		path:      n.node.GetRealPath(),
+		n:         n,
 		uid:       req.Uid,
 		gid:       req.Gid,
 		threadPID: req.Pid,
@@ -327,18 +331,18 @@ func (n *userNode) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.O
 }
 
 func (n *userNode) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "create", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "create", &req.Header)) {
 		return nil, nil, ErrUserNotAllowed
 	}
 	node, handle, err := n.node.Create(ctx, req, resp)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &userNode{n.f, node.(*loopback.Node)},
-		&uhandle{
+	ncreate := &userNode{n.f, node.(*loopback.Node), filepath.Join(n.newPath, req.Name)}
+	return ncreate, &uhandle{
 			f:         n.f,
 			handle:    handle.(*loopback.Handle),
-			path:      n.node.GetRealPath(),
+			n:         ncreate,
 			uid:       req.Uid,
 			gid:       req.Gid,
 			threadPID: req.Pid,
@@ -348,32 +352,32 @@ func (n *userNode) Create(ctx context.Context, req *fuse.CreateRequest, resp *fu
 }
 
 func (n *userNode) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "mkdir", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "mkdir", &req.Header)) {
 		return nil, ErrUserNotAllowed
 	}
 	node, err := n.node.Mkdir(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return &userNode{n.f, node.(*loopback.Node)}, nil
+	return &userNode{n.f, node.(*loopback.Node), filepath.Join(n.newPath, req.Name)}, nil
 }
 
 func (n *userNode) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "remove", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "remove", &req.Header)) {
 		return ErrUserNotAllowed
 	}
 	return n.node.Remove(ctx, req)
 }
 
 func (n *userNode) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "setattr", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "setattr", &req.Header)) {
 		return ErrUserNotAllowed
 	}
 	return n.node.Setattr(ctx, req, resp)
 }
 
 func (n *userNode) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "rename", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "rename", &req.Header)) {
 		return ErrUserNotAllowed
 	}
 	return n.node.Rename(ctx, req, newDir)
@@ -385,7 +389,7 @@ func (n *userNode) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (str
 }
 
 func (n *userNode) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (fs.Node, error) {
-	if !n.f.IsUserAllowed(ctx, newUserReq(n.node.GetRealPath(), "symlink", &req.Header)) {
+	if !n.f.IsUserAllowed(ctx, newUserReq(n.newPath, "symlink", &req.Header)) {
 		return nil, ErrUserNotAllowed
 	}
 	return n.node.Symlink(ctx, req)
@@ -394,7 +398,7 @@ func (n *userNode) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (fs.No
 type uhandle struct {
 	f          *FS
 	handle     *loopback.Handle
-	path       string
+	n          *userNode
 	uid, gid   uint32
 	threadPID  uint32
 	allow      bool // if false, check again at allowUntil; if true, always allow.
@@ -412,7 +416,7 @@ func (h *uhandle) userAllowed(ctx context.Context, action string) bool {
 		return h.allow
 	}
 	allow := h.f.IsUserAllowed(ctx, UserRequest{
-		Path:      h.path,
+		Path:      h.n.newPath,
 		Action:    action,
 		UID:       h.uid,
 		GID:       h.gid,

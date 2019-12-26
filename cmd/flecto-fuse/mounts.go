@@ -26,7 +26,7 @@ type mountOpts struct {
 }
 
 func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input userinput.Interface) error {
-	fs := userfs.New(srcDir)
+	fs := userfs.New(srcDir, opts.destDir)
 	if opts.debug {
 		fs.SetLogger(log.New(os.Stderr, "", log.LstdFlags))
 	}
