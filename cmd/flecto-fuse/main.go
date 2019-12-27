@@ -85,14 +85,15 @@ func run() error {
 		return errors.New("Invalid -input=" + inputMode)
 	}
 
-	for iarg := 0; iarg < flag.NArg(); iarg++ {
-		action := flag.Arg(iarg)
+	for args := flag.Args(); len(args) != 0; {
+		action := args[0]
 		switch action {
 
 		case "userfs":
-			srcDir := flag.Arg(iarg + 1)
-			destDir := flag.Arg(iarg + 2)
-			iarg += 2
+			flags := newSubflags(action)
+			flags.Parse(args[1:])
+			srcDir := flags.Arg(0)
+			destDir := flags.Arg(1)
 			if srcDir == "" || destDir == "" {
 				return errors.New(action + " expects args: srcDir destDir")
 			}
@@ -104,10 +105,12 @@ func run() error {
 				}
 				return nil
 			})
+			args = flags.Next()
 
 		case "subprocfs":
-			destDir := flag.Arg(iarg + 1)
-			iarg++
+			flags := newSubflags(action)
+			flags.Parse(args[1:])
+			destDir := flags.Arg(0)
 			if destDir == "" {
 				return errors.New(action + " expects args:  destDir")
 			}
@@ -119,11 +122,11 @@ func run() error {
 				}
 				return nil
 			})
+			args = flags.Next()
 
 		default:
 			return errors.New("Unknown action: " + action)
 		}
-
 	}
 
 	return group.Wait()
@@ -136,4 +139,28 @@ func main() {
 		log.Printf("ERROR %v", err)
 		os.Exit(1)
 	}
+}
+
+type subflags struct {
+	*flag.FlagSet
+	argsUsed int
+}
+
+func newSubflags(name string) *subflags {
+	return &subflags{FlagSet: flag.NewFlagSet(name, flag.PanicOnError)}
+}
+
+func (flags *subflags) Arg(i int) string {
+	if i >= flags.FlagSet.NArg() {
+		return ""
+	}
+	if i >= flags.argsUsed {
+		flags.argsUsed = i + 1
+	}
+	return flags.FlagSet.Args()[i]
+}
+
+// Next gets the slice of the args not accessed via Arg(i)
+func (flags *subflags) Next() []string {
+	return flags.FlagSet.Args()[flags.argsUsed:]
 }
