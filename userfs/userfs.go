@@ -50,6 +50,7 @@ const (
 
 // Note: PID can be 0 if not known or it is the OS.
 type UserRequest struct {
+	Deadline  time.Time
 	Path      string
 	Action    string
 	UID, GID  uint32
@@ -231,6 +232,7 @@ const UserAllowedDefaultTimeout = 10 * time.Second
 
 func newUserReq(newPath, action string, header *fuse.Header) UserRequest {
 	return UserRequest{
+		Deadline:  time.Now().Add(UserAllowedDefaultTimeout),
 		Path:      newPath,
 		Action:    action,
 		UID:       header.Uid,
@@ -241,6 +243,7 @@ func newUserReq(newPath, action string, header *fuse.Header) UserRequest {
 
 func newUserReqFromAttr(newPath, action string, attr *fuse.Attr) UserRequest {
 	return UserRequest{
+		Deadline:  time.Now().Add(UserAllowedDefaultTimeout),
 		Path:      newPath,
 		Action:    action,
 		UID:       attr.Uid,
@@ -251,7 +254,7 @@ func newUserReqFromAttr(newPath, action string, attr *fuse.Attr) UserRequest {
 
 // IsUserAllowed - is the user allowed? waits for up to UserAllowedDefaultTimeout for the user to respond.
 func (f *FS) IsUserAllowed(ctx context.Context, req UserRequest) bool {
-	ctx, cancel := context.WithTimeout(ctx, UserAllowedDefaultTimeout)
+	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
 	defer cancel()
 	return f.isUserAllowedWait(ctx, req).Allowed()
 }
@@ -430,6 +433,7 @@ func (h *uhandle) userAllowed(ctx context.Context, action string) bool {
 		return h.allow
 	}
 	allow := h.f.IsUserAllowed(ctx, UserRequest{
+		Deadline:  time.Now().Add(UserAllowedDefaultTimeout),
 		Path:      h.n.newPath,
 		Action:    action,
 		UID:       h.uid,

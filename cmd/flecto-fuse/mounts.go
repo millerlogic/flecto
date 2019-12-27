@@ -96,7 +96,7 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 					choices = append(choices, userinput.Choice{Text: "Deny All", Shortcut: 'd'})
 					choices = append(choices, userinput.Choice{Text: "Skip", Shortcut: 's', Default: true})
 				}
-				ctxInput, cancel := context.WithTimeout(ctx, userfs.UserAllowedDefaultTimeout)
+				ctxInput, cancel := context.WithDeadline(ctx, req.Deadline)
 				defer cancel()
 				in, err := input.GetInput(ctxInput, msg, choices...)
 				if err != nil {
