@@ -27,7 +27,7 @@ func run() error {
 	inputMode := "auto"
 	flag.StringVar(&inputMode, "input", inputMode, "Set the input mode (term=read the terminal, notify=notifications)")
 	timeout := time.Duration(0)
-	flag.DurationVar(&timeout, "_timeout", timeout, "Set timeout to stop serving (do not use, temporary feature)")
+	flag.DurationVar(&timeout, "timeout", timeout, "Set timeout to stop serving")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		return errors.New("Invalid args")
