@@ -103,6 +103,10 @@ func (h hourTime) Time() time.Time {
 	return time.Unix(int64(float64(h)*60*60), 0)
 }
 
+func (h hourTime) String() string {
+	return h.Time().String()
+}
+
 func toHourTime(t time.Time) hourTime {
 	return hourTime(float64(t.Unix()) / 60 / 60)
 }
