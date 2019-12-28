@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"log"
 	"os"
@@ -74,15 +75,19 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 		for req := range allowReqs {
 			func() {
 				recent := atomic.AddInt32(&numRecentRequests, 1)
+				command := req.Command()
 				if opts.verbose {
-					log.Printf("File %s request for \"%s\" (uid=%d, tid=%d)",
-						req.Action, req.Path, req.UID, req.ThreadPID)
+					log.Printf("File %s request for \"%s\" (uid=%d, pid=%d, tid=%d, command=%s)",
+						req.Action, req.Path, req.UID, req.PID, req.ThreadPID, command)
 				}
 				fname := filepath.Base(req.Path)
 				fdir := filepath.Dir(req.Path)
 				fext := filepath.Ext(fname)
 				fdisp := strings.TrimRight(fname, fext)
-				msg := "<b>" + html.EscapeString(strings.Title(req.Action)) + "</b> file:\n• <b>" +
+				msg := fmt.Sprintf("Request from <b>%s</b> (pid %d, uid %d)",
+					html.EscapeString(command), req.PID, req.UID) +
+					"\n<b>" + html.EscapeString(strings.Title(req.Action)) +
+					"</b> file:\n• <b>" +
 					fdisp + "</b><small>" + html.EscapeString(fext) +
 					"   <i>" + html.EscapeString(fdir) + "</i></small>"
 				var choices []userinput.Choice
@@ -111,19 +116,19 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 						log.Printf("ERROR %v", err)
 						log.Print("Request error, denying...")
 					}
-					fs.SetUserAllowed(req.Path, userfs.UserAllowNoneOnce)
+					fs.SetUserAllowed(req.ThreadPID, req.Path, userfs.UserAllowNoneOnce)
 				} else {
 					switch strings.ToLower(in) {
 					case "allow", "y": // (one)
 						if opts.verbose {
 							log.Print("Allowing...")
 						}
-						fs.SetUserAllowed(req.Path, userfs.UserAllowAll)
+						fs.SetUserAllowed(req.ThreadPID, req.Path, userfs.UserAllowAll)
 					case "deny", "n":
 						if opts.verbose {
 							log.Print("Denying...")
 						}
-						fs.SetUserAllowed(req.Path, userfs.UserAllowNone)
+						fs.SetUserAllowed(req.ThreadPID, req.Path, userfs.UserAllowNone)
 					case "deny all", "d": // deny 30s
 						if opts.verbose {
 							log.Print("Denying all for 30 seconds...")
@@ -138,7 +143,7 @@ func mountUserFS(ctx context.Context, srcDir string, opts mountOpts, input useri
 						if opts.verbose {
 							log.Print("Skipping...")
 						}
-						fs.SetUserAllowed(req.Path, userfs.UserAllowNoneOnce)
+						fs.SetUserAllowed(req.ThreadPID, req.Path, userfs.UserAllowNoneOnce)
 					}
 				}
 			}()

@@ -1,9 +1,15 @@
 package userfs
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io/ioutil"
 	"log"
+	"math"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -54,7 +60,132 @@ type UserRequest struct {
 	Path      string
 	Action    string
 	UID, GID  uint32
-	ThreadPID uint32
+	ThreadPID uint32 // The thread, or 0 if not known.
+	PID       uint32 // The process, or 0 if not known.
+}
+
+func (req UserRequest) Command() string {
+	cmd, _ := getCommand(req.PID)
+	return cmd
+}
+
+// Returns 0 if not found.
+func getProcessFromThreadPID(threadPID uint32) uint32 {
+	x, _ := filepath.Glob(fmt.Sprintf("/proc/*/task/%v", threadPID))
+	if len(x) == 0 {
+		return 0
+	}
+	a := x[0][6:] // remove "/proc/"
+	islash := strings.IndexByte(a, '/')
+	b := a[:islash]
+	processPID64, _ := strconv.ParseUint(b, 10, 32)
+	return uint32(processPID64)
+}
+
+func getPID(threadPID uint32) uint32 {
+	pid := getProcessFromThreadPID(threadPID)
+	if pid != 0 {
+		return pid
+	}
+	return threadPID
+}
+
+func getCommand(pid uint32) (string, bool) {
+	data, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err == nil {
+		bcmd := data
+		inul := bytes.IndexByte(bcmd, 0)
+		if inul != -1 {
+			bcmd = bcmd[:inul]
+		}
+		return string(bcmd), true
+	}
+	return fmt.Sprintf("(PID %d)", pid), false
+}
+
+type hourTime float32
+
+func (h hourTime) Time() time.Time {
+	return time.Unix(int64(float64(h)*60*60), 0)
+}
+
+func toHourTime(t time.Time) hourTime {
+	return hourTime(float64(t.Unix()) / 60 / 60)
+}
+
+type allowing struct {
+	pid   uint32
+	ts    hourTime
+	allow UserAllow
+}
+
+type allows []allowing
+
+const allowExpire = 7 * 24 * time.Hour
+
+func (a *allows) ForPID(pid uint32) (UserAllow, bool) {
+	now := time.Now()
+	expire := now.Add(allowExpire)
+	for i, ax := range *a {
+		if ax.pid == pid {
+			if ax.ts.Time().Before(expire) {
+				ax.ts = toHourTime(now) // Update ts!
+				(*a)[i] = ax
+				return ax.allow, true
+			}
+			// It's expired, so don't use the allow value.
+			// Don't bother removing it now, it's likely to be added again.
+			break
+		}
+	}
+	return 0, false
+}
+
+const maxAllows = 8
+
+func (a *allows) Set(pid uint32, allow UserAllow) {
+	lowestTS := hourTime(math.Inf(1))
+	lowestIndex := -1
+	for i, ax := range *a {
+		if ax.pid == pid {
+			ax.ts = toHourTime(time.Now()) // Update ts!
+			ax.allow = allow
+			(*a)[i] = ax
+			return
+		}
+		if ax.ts < lowestTS {
+			lowestTS = ax.ts
+			lowestIndex = i
+		}
+	}
+	if len(*a) >= maxAllows {
+		// Hit maxAllows, remove the lowest ts.
+		*a = append((*a)[:lowestIndex], (*a)[lowestIndex+1:]...)
+	}
+	*a = append(*a, allowing{pid, toHourTime(time.Now()), allow})
+}
+
+func (a *allows) Delete(pid uint32) bool {
+	for i, ax := range *a {
+		if ax.pid == pid {
+			*a = append((*a)[:i], (*a)[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (a *allows) DeleteExpired() {
+	now := time.Now()
+	expire := now.Add(allowExpire)
+	dest := 0
+	for _, ax := range *a {
+		if ax.ts.Time().Before(expire) {
+			(*a)[dest] = ax
+			dest++
+		}
+	}
+	*a = (*a)[:dest]
 }
 
 // FS for user files, such as their home, documents, other personal files.
@@ -62,11 +193,12 @@ type FS struct {
 	fs      *loopback.FS
 	newPath string
 
-	alock          sync.RWMutex
-	allowed        map[string]UserAllow // paths allowed.
+	alock          sync.Mutex
+	allowed        map[string]allows // paths allowed.
 	await          map[string]chan struct{}
 	allowReqs      chan<- UserRequest
 	autoAllowUntil time.Time // auto respond to requests with userAutoAllow until this time is hit.
+	lastCleanup    time.Time
 	autoAllow      UserAllow
 }
 
@@ -76,10 +208,11 @@ var _ fs.FSStatfser = &FS{}
 // New user FS.
 func New(srcPath, newPath string) *FS {
 	return &FS{
-		fs:      loopback.New(srcPath),
-		newPath: newPath,
-		allowed: make(map[string]UserAllow),
-		await:   make(map[string]chan struct{}),
+		fs:          loopback.New(srcPath),
+		newPath:     newPath,
+		allowed:     make(map[string]allows),
+		await:       make(map[string]chan struct{}),
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -89,6 +222,16 @@ func (f *FS) SetLogger(logger interface {
 	Printf(format string, v ...interface{})
 }) {
 	f.fs.SetLogger(logger)
+}
+
+func (f *FS) cleanupUnlocked() {
+	f.lastCleanup = time.Now()
+	for path, allowed := range f.allowed {
+		allowed.DeleteExpired()
+		if len(allowed) == 0 {
+			delete(f.allowed, path)
+		}
+	}
 }
 
 // AutoUserAllowRequests -
@@ -136,17 +279,21 @@ func (f *FS) StopUserAllowRequests() {
 }
 
 // SetUserAllowed responds to a path user request.
-func (f *FS) SetUserAllowed(path string, allow UserAllow) {
+func (f *FS) SetUserAllowed(threadPID uint32, path string, allow UserAllow) {
+	pid := getPID(threadPID)
 	f.alock.Lock()
+	defer f.alock.Unlock()
 	if allow != UserAllowNoneOnce {
-		f.allowed[path] = allow
+		allowed := f.allowed[path]
+		allowed.Set(pid, allow)
+		f.allowed[path] = allowed
+	}
+	if time.Now().After(f.lastCleanup.Add(time.Hour)) {
+		f.cleanupUnlocked()
 	}
 	if aw, ok := f.await[path]; ok {
 		delete(f.await, path)
-		f.alock.Unlock()
 		close(aw)
-	} else {
-		f.alock.Unlock()
 	}
 }
 
@@ -154,9 +301,10 @@ func (f *FS) SetUserAllowed(path string, allow UserAllow) {
 func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow {
 	path := req.Path
 
-	f.alock.RLock()
-	allow, ok := f.allowed[path]
-	f.alock.RUnlock()
+	f.alock.Lock()
+	allowed := f.allowed[path]
+	allow, ok := allowed.ForPID(req.PID)
+	f.alock.Unlock()
 	if ok {
 		return allow
 	}
@@ -170,9 +318,9 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 
 	// A few things done in a lock...
 	f.alock.Lock()
-	allow, ok = f.allowed[path] // Check again in case of change.
+	allowed = f.allowed[path] // Check again in case of change.
+	allow, ok = allowed.ForPID(req.PID)
 	if ok {
-		f.alock.Unlock()
 		return allow
 	}
 	// Automatic reply?
@@ -209,9 +357,10 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	}
 
 	// Get reply.
-	f.alock.RLock()
-	allow, ok = f.allowed[path] // defaults to UserAllowNone
-	f.alock.RUnlock()
+	f.alock.Lock()
+	allowed = f.allowed[path] // defaults to UserAllowNone
+	allow, ok = allowed.ForPID(req.PID)
+	f.alock.Unlock()
 	return allow
 }
 
@@ -219,8 +368,15 @@ func (f *FS) isUserAllowedWait(ctx context.Context, req UserRequest) UserAllow {
 	allow := f.readUserAllowedWait(ctx, req)
 	if allow == UserAllowOnce {
 		f.alock.Lock()
-		if f.allowed[req.Path] == UserAllowOnce { // Check again in case of change.
-			delete(f.allowed, req.Path)
+		allowed := f.allowed[req.Path]
+		allow, _ := allowed.ForPID(req.PID)
+		if allow == UserAllowOnce { // Check again in case of change.
+			allowed.Delete(req.PID)
+			if len(allowed) == 0 {
+				delete(f.allowed, req.Path)
+			} else {
+				f.allowed[req.Path] = allowed
+			}
 		}
 		f.alock.Unlock()
 	}
@@ -238,6 +394,7 @@ func newUserReq(newPath, action string, header *fuse.Header) UserRequest {
 		UID:       header.Uid,
 		GID:       header.Gid,
 		ThreadPID: header.Pid,
+		PID:       getPID(header.Pid),
 	}
 }
 
@@ -249,6 +406,7 @@ func newUserReqFromAttr(newPath, action string, attr *fuse.Attr) UserRequest {
 		UID:       attr.Uid,
 		GID:       attr.Gid,
 		ThreadPID: 0, // not known
+		PID:       0, // not known
 	}
 }
 
@@ -439,6 +597,7 @@ func (h *uhandle) userAllowed(ctx context.Context, action string) bool {
 		UID:       h.uid,
 		GID:       h.gid,
 		ThreadPID: h.threadPID,
+		PID:       getPID(h.threadPID),
 	})
 	h.allow = allow
 	h.allowUntil = now.Add(handleAllowTimeout)
