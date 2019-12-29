@@ -122,14 +122,29 @@ func (f *FS) SetUserAllowed(threadPID uint32, path string, allow UserAllow) {
 	}
 }
 
+func (f *FS) checkAllowedFastUnlocked(req UserRequest) (UserAllow, bool) {
+	allowed := f.allowed[req.Path]
+	allow, ok := allowed.ForPID(req.PID) // defaults to UserAllowNone
+	if !ok {
+		// Automatic reply?
+		if time.Now().Before(f.autoAllowUntil) {
+			return f.autoAllow, true
+		}
+	}
+	return allow, ok
+}
+
+func (f *FS) checkAllowedFast(req UserRequest) (UserAllow, bool) {
+	f.alock.Lock()
+	defer f.alock.Unlock()
+	return f.checkAllowedFastUnlocked(req)
+}
+
 // waits until the ctx is done! so make sure some sort of cancelation is in place.
 func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow {
 	path := req.Path
 
-	f.alock.Lock()
-	allowed := f.allowed[path]
-	allow, ok := allowed.ForPID(req.PID)
-	f.alock.Unlock()
+	allow, ok := f.checkAllowedFast(req)
 	if ok {
 		return allow
 	}
@@ -143,15 +158,8 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 
 	// A few things done in a lock...
 	f.alock.Lock()
-	allowed = f.allowed[path] // Check again in case of change.
-	allow, ok = allowed.ForPID(req.PID)
+	allow, ok = f.checkAllowedFastUnlocked(req)
 	if ok {
-		return allow
-	}
-	// Automatic reply?
-	if time.Now().Before(f.autoAllowUntil) {
-		allow = f.autoAllow
-		f.alock.Unlock()
 		return allow
 	}
 	// Need to get or init an await channel.
@@ -183,18 +191,7 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	}
 
 	// Get reply.
-	f.alock.Lock()
-	allowed = f.allowed[path] // defaults to UserAllowNone
-	allow, ok = allowed.ForPID(req.PID)
-	if !ok {
-		// Automatic reply? in case it was granted while waiting.
-		if time.Now().Before(f.autoAllowUntil) {
-			allow = f.autoAllow
-			f.alock.Unlock()
-			return allow
-		}
-	}
-	f.alock.Unlock()
+	allow, ok = f.checkAllowedFast(req)
 	return allow
 }
 
@@ -253,9 +250,8 @@ func (f *FS) IsUserAllowed(ctx context.Context, req UserRequest) bool {
 
 // IsUserAllowedFast - quickly checks if the user allowed, without waiting.
 func (f *FS) IsUserAllowedFast(ctx context.Context, req UserRequest) bool {
-	ctx, cancel := context.WithCancel(ctx)
-	cancel() // cancel it now, we want it done immediately.
-	return f.isUserAllowedWait(ctx, req).Allowed()
+	allow, _ := f.checkAllowedFast(req)
+	return allow.Allowed()
 }
 
 // Root node (dir)
