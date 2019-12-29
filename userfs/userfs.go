@@ -150,8 +150,9 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	}
 	// Automatic reply?
 	if time.Now().Before(f.autoAllowUntil) {
+		allow = f.autoAllow
 		f.alock.Unlock()
-		return f.autoAllow
+		return allow
 	}
 	// Need to get or init an await channel.
 	aw, ok := f.await[path]
@@ -185,6 +186,14 @@ func (f *FS) readUserAllowedWait(ctx context.Context, req UserRequest) UserAllow
 	f.alock.Lock()
 	allowed = f.allowed[path] // defaults to UserAllowNone
 	allow, ok = allowed.ForPID(req.PID)
+	if !ok {
+		// Automatic reply? in case it was granted while waiting.
+		if time.Now().Before(f.autoAllowUntil) {
+			allow = f.autoAllow
+			f.alock.Unlock()
+			return allow
+		}
+	}
 	f.alock.Unlock()
 	return allow
 }
